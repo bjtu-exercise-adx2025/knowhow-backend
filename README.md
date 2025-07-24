@@ -276,4 +276,3 @@ tail -f app/logs/app.log
 # 查看系统服务日志
 sudo journalctl -u ***REMOVED_SECRET***-backend -f
 ```
-# hi
