@@ -16,3 +16,4 @@ python-dotenv==1.0.0
 sqlalchemy-serializer==1.4.1
 geoalchemy2==0.14.3
 Flask-Bcrypt==1.0.1
+oss2==2.19.1
