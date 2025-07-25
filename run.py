@@ -63,8 +63,8 @@ if __name__ == '__main__':
     print("按 Ctrl+C 停止所有服务")
     
     app.run(
-        host='127.0.0.1',  # 允许外部访问（默认127.0.0.1仅本地）
+        host='0.0.0.0',  # 允许外部访问（默认127.0.0.1仅本地）
         port=port,  # 默认端口5000，可修改为80或其他
         threaded=True,  # 启用多线程处理请求
-        ssl_context='adhoc'  # 可选：启用HTTPS（生产环境建议用Nginx反向代理）
+        ssl_context=('cert.pem', 'key.pem'),
     )

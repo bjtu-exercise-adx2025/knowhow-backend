@@ -5,13 +5,13 @@
 echo "🔧 启动 Project2025-Backend开发环境..."
 
 # 检查虚拟环境
-if [ ! -d "venv" ]; then
+if [ ! -d ".venv" ]; then
     echo "❌ 虚拟环境不存在，请先创建虚拟环境"
     exit 1
 fi
 
 # 激活虚拟环境
-source venv/bin/activate
+source .venv/bin/activate
 
 # 检查依赖
 echo "📦 检查依赖..."
