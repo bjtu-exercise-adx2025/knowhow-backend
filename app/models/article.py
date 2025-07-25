@@ -11,6 +11,9 @@ class Article(db.Model, SerializerMixin):
     """文章表"""
 
     __tablename__ = "articles"
+    
+    # 序列化规则：限制tags关系的深度，避免循环引用
+    serialize_rules = ('-tags.articles',)
 
     id = db.Column(BigInteger, primary_key=True, autoincrement=True, comment="文章ID")
     author_id = db.Column(

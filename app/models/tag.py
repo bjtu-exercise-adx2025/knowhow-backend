@@ -11,6 +11,9 @@ class Tag(db.Model, SerializerMixin):
     """标签表"""
 
     __tablename__ = "tags"
+    
+    # 序列化规则：排除循环引用的关系字段
+    serialize_rules = ('-articles',)
 
     id = db.Column(Integer, primary_key=True, autoincrement=True, comment="标签ID")
     user_id = db.Column(

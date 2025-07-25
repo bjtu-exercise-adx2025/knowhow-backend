@@ -3,6 +3,8 @@ import os
 from flask import Flask, redirect, request, send_from_directory
 from flask_sslify import SSLify
 
+from flask import Flask, redirect, request, send_from_directory
+
 from .config import Config, DevelopmentConfig
 from .extensions import db, jwt, login_manager
 from .utils.log_utils import init_logging
@@ -11,7 +13,7 @@ from .utils.log_utils import init_logging
 def create_app(config_class=DevelopmentConfig):
     app = Flask(__name__)
     app.config.from_object(config_class)
-    
+
     sslify = SSLify(app)
 
     # 初始化日志

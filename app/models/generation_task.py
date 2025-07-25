@@ -1,7 +1,7 @@
 import datetime as dt
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Text
+from sqlalchemy import BigInteger, Text, JSON
 from sqlalchemy_serializer import SerializerMixin
 
 from app import db
@@ -29,6 +29,12 @@ class GenerationTask(db.Model, SerializerMixin):
         comment="LangGraph任务状态: 0-pending, 1-processing, 2-completed, 3-failed",
     )
     error_message = db.Column(Text, comment="任务失败时的错误信息")
+    created_articles = db.Column(
+        JSON, nullable=False, default=lambda: [], comment="langgraph创建的文章ID列表"
+    )
+    updated_articles = db.Column(
+        JSON, nullable=False, default=lambda: [], comment="langgraph更新的文章ID列表"
+    )
     created_at = db.Column(
         db.DateTime, nullable=False, default=datetime.now(dt.UTC), comment="创建时间"
     )

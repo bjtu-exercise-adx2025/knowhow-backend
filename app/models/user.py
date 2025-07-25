@@ -12,6 +12,9 @@ class User(db.Model, SerializerMixin):
     """用户表"""
 
     __tablename__ = "users"
+    
+    # 序列化规则：排除敏感信息和避免循环引用
+    serialize_rules = ('-password', '-audio_records', '-generation_tasks', '-articles')
 
     # 主键
     id = db.Column(BigInteger, primary_key=True, autoincrement=True, comment="用户ID")

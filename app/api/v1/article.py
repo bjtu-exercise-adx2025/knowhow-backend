@@ -642,6 +642,58 @@ def get_task_status(task_id):
         # 状态描述映射
         status_map = {0: "pending", 1: "processing", 2: "completed", 3: "failed"}
 
+        # 获取创建和更新的文章信息
+        created_articles_info = []
+        updated_articles_info = []
+        
+        # 处理创建的文章
+        if task.created_articles:
+            for article_id in task.created_articles:
+                article = Article.query.get(article_id)
+                if article:
+                    # 获取文章标签
+                    tags = []
+                    for tag in article.tags:
+                        tags.append({"id": tag.id, "name": tag.name})
+                    
+                    article_info = {
+                        "id": article.id,
+                        "title": article.title,
+                        "summary": article.summary,
+                        "status": article.status,
+                        "tags": tags,
+                        "created_at": article.created_at.isoformat(),
+                        "updated_at": article.updated_at.isoformat(),
+                        "finished_at": (
+                            article.finished_at.isoformat() if article.finished_at else None
+                        ),
+                    }
+                    created_articles_info.append(article_info)
+        
+        # 处理更新的文章
+        if task.updated_articles:
+            for article_id in task.updated_articles:
+                article = Article.query.get(article_id)
+                if article:
+                    # 获取文章标签
+                    tags = []
+                    for tag in article.tags:
+                        tags.append({"id": tag.id, "name": tag.name})
+                    
+                    article_info = {
+                        "id": article.id,
+                        "title": article.title,
+                        "summary": article.summary,
+                        "status": article.status,
+                        "tags": tags,
+                        "created_at": article.created_at.isoformat(),
+                        "updated_at": article.updated_at.isoformat(),
+                        "finished_at": (
+                            article.finished_at.isoformat() if article.finished_at else None
+                        ),
+                    }
+                    updated_articles_info.append(article_info)
+
         # 格式化返回数据
         task_data = {
             "task_id": task.id,
@@ -651,10 +703,8 @@ def get_task_status(task_id):
             "error_message": task.error_message,
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat(),
-            "status_description": {
-                "summary": status_map.get(task.summary_status, "unknown"),
-                "langgraph": status_map.get(task.langgraph_status, "unknown"),
-            },
+            "created_articles_info": created_articles_info,
+            "updated_articles_info": updated_articles_info,
         }
 
         return {"message": "获取任务状态成功", "task": task_data}, 200
@@ -675,6 +725,11 @@ def get_my_articles():
           required: true
           type: integer
           description: 用户ID
+        - name: tag_id
+          in: query
+          required: false
+          type: integer
+          description: 标签ID，用于筛选特定标签的文章
         - name: page
           in: query
           required: false
@@ -693,12 +748,13 @@ def get_my_articles():
         400:
             description: 请求参数错误
         404:
-            description: 用户不存在
+            description: 用户不存在或标签不存在
         500:
             description: 服务器内部错误
     """
     try:
         user_id = request.args.get("user_id", type=int)
+        tag_id = request.args.get("tag_id", type=int)
         page = request.args.get("page", type=int, default=1)
         per_page = request.args.get("per_page", type=int, default=10)
 
@@ -713,10 +769,30 @@ def get_my_articles():
         if not user:
             return {"message": "用户不存在"}, 404
 
-        # 查询用户的文章（分页）
-        articles_query = Article.query.filter_by(author_id=user_id).order_by(
-            Article.created_at.desc()
-        )
+        # 如果提供了tag_id，验证标签是否存在且属于该用户
+        if tag_id:
+            tag = Tag.query.filter_by(id=tag_id, user_id=user_id).first()
+            if not tag:
+                return {"message": "标签不存在或不属于该用户"}, 404
+
+        # 构建查询条件
+        if tag_id:
+            # 通过tag_id筛选文章：需要连接ArticleTag表
+            articles_query = (
+                Article.query
+                .join(ArticleTag, Article.id == ArticleTag.article_id)
+                .filter(
+                    Article.author_id == user_id,
+                    ArticleTag.tag_id == tag_id
+                )
+                .order_by(Article.created_at.desc())
+            )
+        else:
+            # 返回用户的所有文章
+            articles_query = Article.query.filter_by(author_id=user_id).order_by(
+                Article.created_at.desc()
+            )
+        
         total = articles_query.count()
         articles = articles_query.offset((page - 1) * per_page).limit(per_page).all()
 
@@ -856,6 +932,146 @@ def get_article_recommendations():
     except Exception as e:
         current_app.logger.error(f"获取推荐文章失败: {str(e)}")
         return {"message": "获取推荐文章失败，请稍后重试"}, 500
+
+
+@article_bp.route("/articles/relationships", methods=["GET"])
+def get_article_relationships():
+    """
+    获取所有文章引用关系
+    ---
+    parameters:
+        - name: page
+          in: query
+          required: false
+          type: integer
+          default: 1
+          description: 页码
+        - name: per_page
+          in: query
+          required: false
+          type: integer
+          default: 20
+          description: 每页数量
+        - name: citing_article_id
+          in: query
+          required: false
+          type: integer
+          description: 引用文章ID（筛选条件）
+        - name: referenced_article_id
+          in: query
+          required: false
+          type: integer
+          description: 被引用文章ID（筛选条件）
+    responses:
+        200:
+            description: 成功获取文章关系列表
+            schema:
+                type: object
+                properties:
+                    message:
+                        type: string
+                    total:
+                        type: integer
+                    page:
+                        type: integer
+                    per_page:
+                        type: integer
+                    relationships:
+                        type: array
+                        items:
+                            type: object
+                            properties:
+                                id:
+                                    type: integer
+                                citing_article:
+                                    type: object
+                                    properties:
+                                        id:
+                                            type: integer
+                                        title:
+                                            type: string
+                                        author_name:
+                                            type: string
+                                referenced_article:
+                                    type: object
+                                    properties:
+                                        id:
+                                            type: integer
+                                        title:
+                                            type: string
+                                        author_name:
+                                            type: string
+                                created_at:
+                                    type: string
+                                    format: date-time
+        400:
+            description: 请求参数错误
+        500:
+            description: 服务器内部错误
+    """
+    try:
+        page = request.args.get("page", type=int, default=1)
+        per_page = request.args.get("per_page", type=int, default=20)
+        citing_article_id = request.args.get("citing_article_id", type=int)
+        referenced_article_id = request.args.get("referenced_article_id", type=int)
+
+        if page < 1 or per_page < 1 or per_page > 100:
+            return {"message": "页码和每页数量参数不合法"}, 400
+
+        # 构建查询条件
+        query = ArticleRelationship.query
+        
+        if citing_article_id:
+            query = query.filter(ArticleRelationship.citing_article_id == citing_article_id)
+        
+        if referenced_article_id:
+            query = query.filter(ArticleRelationship.referenced_article_id == referenced_article_id)
+
+        # 按创建时间倒序排列
+        query = query.order_by(ArticleRelationship.created_at.desc())
+        
+        # 分页查询
+        total = query.count()
+        relationships = query.offset((page - 1) * per_page).limit(per_page).all()
+
+        # 格式化返回数据
+        relationship_list = []
+        for rel in relationships:
+            # 获取引用文章信息
+            citing_article = Article.query.get(rel.citing_article_id)
+            citing_author = User.query.get(citing_article.author_id) if citing_article else None
+            
+            # 获取被引用文章信息
+            referenced_article = Article.query.get(rel.referenced_article_id)
+            referenced_author = User.query.get(referenced_article.author_id) if referenced_article else None
+
+            relationship_data = {
+                "id": rel.id,
+                "citing_article": {
+                    "id": citing_article.id if citing_article else None,
+                    "title": citing_article.title if citing_article else "文章已删除",
+                    "author_name": citing_author.username if citing_author else "作者未知"
+                },
+                "referenced_article": {
+                    "id": referenced_article.id if referenced_article else None,
+                    "title": referenced_article.title if referenced_article else "文章已删除",
+                    "author_name": referenced_author.username if referenced_author else "作者未知"
+                },
+                "created_at": rel.created_at.isoformat()
+            }
+            relationship_list.append(relationship_data)
+
+        return {
+            "message": "获取文章关系列表成功",
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "relationships": relationship_list,
+        }, 200
+
+    except Exception as e:
+        current_app.logger.error(f"获取文章关系列表失败: {str(e)}")
+        return {"message": "获取文章关系列表失败，请稍后重试"}, 500
 
 
 @article_bp.route("/articles/<int:article_id>", methods=["GET"])

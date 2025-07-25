@@ -2,6 +2,7 @@ from flask import Blueprint, current_app, request
 
 from app import db
 from app.models.user import User
+from app.models.tag import Tag
 from app.utils.oss_service import OSSService
 
 user_bp = Blueprint("users", __name__)
@@ -73,11 +74,14 @@ def create_user():
             user.phone = phone
         db.session.add(user)
         db.session.commit()
+        
+        # 返回新创建的用户信息
+        return {"message": "用户创建成功", "user": user.to_dict()}, 201
+        
     except Exception as e:
         current_app.logger.error(e)
+        db.session.rollback()
         return {"message": str(e)}, 400
-
-    return {"message": "用户创建成功"}, 201
 
 
 @user_bp.route("/users/<int:user_id>", methods=["GET"])
@@ -103,6 +107,51 @@ def get_user(user_id):
         return {"message": "用户不存在"}, 404
 
     return user.to_dict()
+
+
+@user_bp.route("/users/<int:user_id>/tags", methods=["GET"])
+def get_user_tags(user_id):
+    """
+    获取用户的所有标签
+    ---
+    parameters:
+        - name: user_id
+            in: path
+            required: true
+            type: integer
+    responses:
+        200:
+            description: 成功获取用户标签列表
+            schema:
+                type: object
+                properties:
+                    tags:
+                        type: array
+                        items:
+                            type: object
+                            properties:
+                                id:
+                                    type: integer
+                                name:
+                                    type: string
+                                created_at:
+                                    type: string
+                                    format: date-time
+        404:
+            description: 用户不存在
+    """
+    # 检查用户是否存在
+    user = User.query.get(user_id)
+    if not user:
+        return {"message": "用户不存在"}, 404
+    
+    # 获取该用户的所有标签
+    tags = Tag.query.filter_by(user_id=user_id).order_by(Tag.created_at.desc()).all()
+    
+    return {
+        "tags": [tag.to_dict() for tag in tags],
+        "total_count": len(tags)
+    }
 
 
 @user_bp.route("/users/<int:user_id>", methods=["PUT"])

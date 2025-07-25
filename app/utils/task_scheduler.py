@@ -192,11 +192,28 @@ class TaskScheduler:
                     )
 
                 if is_success:
-                    # 更新langgraph状态为完成
+                    # 从LangGraph返回结果中提取文章ID列表
+                    data = result.get("data", {})
+                    created_article_ids = []
+                    updated_article_ids = []
+                    
+                    # 处理created_articles
+                    if data.get("created_articles"):
+                        for created_article in data["created_articles"]:
+                            created_article_ids.append(created_article["new_id"])
+                    
+                    # 处理updated_articles  
+                    if data.get("updated_articles"):
+                        for updated_article in data["updated_articles"]:
+                            updated_article_ids.append(updated_article["id"])
+                    
+                    # 更新任务状态和文章ID列表
                     task.langgraph_status = 2
                     task.summary_status = 2  # 同时将summary状态设为完成，因为LangGraph已经处理了摘要
+                    task.created_articles = created_article_ids
+                    task.updated_articles = updated_article_ids
                     db.session.commit()
-                    current_app.logger.info(f"Langgraph任务完成: {task_id}")
+                    current_app.logger.info(f"Langgraph任务完成: {task_id}, 创建文章: {len(created_article_ids)}, 更新文章: {len(updated_article_ids)}")
 
                     # 处理返回结果中的文章，为新创建和更新的文章生成标签
                     self._process_article_tags(result, task.user_id)
