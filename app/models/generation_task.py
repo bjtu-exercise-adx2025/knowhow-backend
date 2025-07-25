@@ -16,11 +16,17 @@ class GenerationTask(db.Model, SerializerMixin):
     user_id = db.Column(
         BigInteger, db.ForeignKey("users.id"), nullable=False, comment="任务创建者ID"
     )
-    status = db.Column(
-        db.String(20),
+    summary_status = db.Column(
+        BigInteger,
         nullable=False,
-        default="pending",
-        comment="任务状态: pending, processing, completed, failed",
+        default=0,
+        comment="文章总结任务状态: 0-pending, 1-processing, 2-completed,",
+    )
+    langgraph_status = db.Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        comment="LangGraph任务状态: 0-pending, 1-processing, 2-completed, 3-failed",
     )
     error_message = db.Column(Text, comment="任务失败时的错误信息")
     created_at = db.Column(
@@ -41,10 +47,9 @@ class GenerationTask(db.Model, SerializerMixin):
         backref="generation_tasks",
         lazy="dynamic",
     )
-    article = db.relationship("Article", backref="source_task", uselist=False)
 
     # 添加索引
-    __table_args__ = (db.Index("idx_user_id_status", "user_id", "status"),)
+    __table_args__ = (db.Index("idx_user_id", "user_id"),)
 
 
 class TaskRecordsMapping(db.Model):

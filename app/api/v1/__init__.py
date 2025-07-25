@@ -20,9 +20,11 @@ api_v1.add_namespace(ns_v1)
 # 导入并注册当前版本的路由模块
 from . import (
     user,
-    admin_auth
+    admin_auth,
+    article
 )
 
 # 将蓝图注册到主 API 蓝图
 v1_bp.register_blueprint(user.user_bp)  # 明确子级前缀
 v1_bp.register_blueprint(admin_auth.admin_auth_bp)
+v1_bp.register_blueprint(article.article_bp)

@@ -17,3 +17,5 @@ sqlalchemy-serializer==1.4.1
 geoalchemy2==0.14.3
 Flask-Bcrypt==1.0.1
 oss2==2.19.1
+openai==1.97.1
+scikit-learn==1.7.1

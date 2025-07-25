@@ -1,6 +1,6 @@
 # 导入所有模型类
 from .admin_user import AdminUser
-from .article import Article, ArticleTag
+from .article import Article, ArticleTag, ArticleRelationship
 from .generation_task import GenerationTask, TaskRecordsMapping
 from .tag import Tag
 from .user import User
@@ -15,5 +15,6 @@ __all__ = [
     "TaskRecordsMapping",
     "Article",
     "ArticleTag",
+    "ArticleRelationship",
     "Tag",
 ]

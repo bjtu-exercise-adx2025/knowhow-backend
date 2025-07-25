@@ -1,0 +1,26 @@
+{
+  "models": {
+    "default": {
+      "url": "https://ai-proxy.chatwise.app/openrouter/api/v1",
+      "api_key": "***REMOVED_API_KEY***",
+      "model_name": "google/gemini-2.5-pro"
+    }
+  },
+  "settings": {
+    "timeout": 30,
+    "max_retries": 3,
+    "temperature": 0.1,
+    "max_tokens": 40000
+  },
+  "debug": {
+    "enabled": true,
+    "log_level": "DEBUG",
+    "log_to_file": true,
+    "log_file": "langgraph_debug.log",
+    "log_to_console": true,
+    "log_requests": true,
+    "log_responses": true,
+    "log_database_queries": true,
+    "log_processing_steps": true
+  }
+}
