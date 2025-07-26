@@ -944,6 +944,133 @@ def get_article_recommendations():
         return {"message": "获取推荐文章失败，请稍后重试"}, 500
 
 
+@article_bp.route("/articles/user-records", methods=["GET"])
+def get_user_records():
+    """
+    查询指定用户下的所有records内容及其对应的task状态信息
+    ---
+    parameters:
+        - name: user_id
+          in: query
+          required: true
+          type: integer
+          description: 用户ID
+    responses:
+        200:
+            description: 成功获取用户记录列表
+            schema:
+                type: object
+                properties:
+                    message:
+                        type: string
+                    total:
+                        type: integer
+                    records:
+                        type: array
+                        items:
+                            type: object
+                            properties:
+                                record_id:
+                                    type: integer
+                                transcript:
+                                    type: string
+                                title:
+                                    type: string
+                                record_created_at:
+                                    type: string
+                                    format: date-time
+                                task:
+                                    type: object
+                                    properties:
+                                        task_id:
+                                            type: integer
+                                        summary_status:
+                                            type: integer
+                                        langgraph_status:
+                                            type: integer
+                                        error_message:
+                                            type: string
+                                        created_articles:
+                                            type: array
+                                            items:
+                                                type: integer
+                                        updated_articles:
+                                            type: array
+                                            items:
+                                                type: integer
+                                        task_created_at:
+                                            type: string
+                                            format: date-time
+                                        task_updated_at:
+                                            type: string
+                                            format: date-time
+        400:
+            description: 请求参数错误
+        404:
+            description: 用户不存在
+        500:
+            description: 服务器内部错误
+    """
+    try:
+        user_id = request.args.get("user_id", type=int)
+
+        if not user_id:
+            return {"message": "用户ID不能为空"}, 400
+
+        # 检查用户是否存在
+        user = User.query.get(user_id)
+        if not user:
+            return {"message": "用户不存在"}, 404
+
+        # 查询用户的所有音频记录及其关联的任务
+        # 使用LEFT JOIN确保即使没有对应的task也能返回record
+        records_query = (
+            db.session.query(UserAudioRecord, GenerationTask)
+            .outerjoin(TaskRecordsMapping, UserAudioRecord.id == TaskRecordsMapping.record_id)
+            .outerjoin(GenerationTask, TaskRecordsMapping.task_id == GenerationTask.id)
+            .filter(UserAudioRecord.user_id == user_id)
+            .order_by(UserAudioRecord.created_at.desc())
+        )
+
+        results = records_query.all()
+
+        # 格式化返回数据
+        record_list = []
+        for record, task in results:
+            record_data = {
+                "record_id": record.id,
+                "transcript": record.transcript,
+                "title": record.title,
+                "record_created_at": record.created_at.isoformat(),
+                "task": None
+            }
+
+            # 如果存在关联的任务，添加任务信息
+            if task:
+                record_data["task"] = {
+                    "task_id": task.id,
+                    "summary_status": task.summary_status,
+                    "langgraph_status": task.langgraph_status,
+                    "error_message": task.error_message,
+                    "created_articles": task.created_articles or [],
+                    "updated_articles": task.updated_articles or [],
+                    "task_created_at": task.created_at.isoformat(),
+                    "task_updated_at": task.updated_at.isoformat()
+                }
+
+            record_list.append(record_data)
+
+        return {
+            "message": "获取用户记录成功",
+            "total": len(record_list),
+            "records": record_list,
+        }, 200
+
+    except Exception as e:
+        current_app.logger.error(f"获取用户记录失败: {str(e)}")
+        return {"message": "获取用户记录失败，请稍后重试"}, 500
+
+
 @article_bp.route("/articles/relationships", methods=["GET"])
 def get_article_relationships():
     """
@@ -1150,35 +1277,35 @@ def get_article_detail(article_id):
                     {"id": cite_article.id, "title": cite_article.title}
                 )
 
-        # Mock相关推荐：获取同作者的其他文章或相似标签的文章
+        # 获取该文章引用的文章的详细概览信息
         recommendations = []
-        rec_query = (
-            Article.query.filter(
-                Article.id != article_id, Article.status == "published"
-            )
-            .order_by(Article.created_at.desc())
-            .limit(5)
-        )
-
-        for rec_article in rec_query:
-            rec_author = User.query.get(rec_article.author_id)
-            if not rec_author:
+        references = ArticleRelationship.query.filter_by(
+            citing_article_id=article_id
+        ).all()
+        
+        for ref in references:
+            ref_article = Article.query.get(ref.referenced_article_id)
+            if not ref_article:
+                continue  # 跳过已删除的文章
+                
+            ref_author = User.query.get(ref_article.author_id)
+            if not ref_author:
                 continue  # 跳过作者不存在的文章
 
-            rec_tags = [{"id": tag.id, "name": tag.name} for tag in rec_article.tags]
+            ref_tags = [{"id": tag.id, "name": tag.name} for tag in ref_article.tags]
 
             recommendations.append(
                 {
-                    "id": rec_article.id,
-                    "title": rec_article.title,
-                    "summary": rec_article.summary,
-                    "tags": rec_tags,
+                    "id": ref_article.id,
+                    "title": ref_article.title,
+                    "summary": ref_article.summary,
+                    "tags": ref_tags,
                     "author": {
-                        "id": rec_author.id,
-                        "username": rec_author.username,
-                        "avatar_url": rec_author.avatar_url,
+                        "id": ref_author.id,
+                        "username": ref_author.username,
+                        "avatar_url": ref_author.avatar_url,
                     },
-                    "created_at": rec_article.created_at.isoformat(),
+                    "created_at": ref_article.created_at.isoformat(),
                 }
             )
 
