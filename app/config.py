@@ -6,7 +6,7 @@ class Config:
     db_user_name = "***REMOVED_SECRET***"
     db_password = "***REMOVED_DB_PASSWORD***"
     db_host = "***REMOVED_DB_HOST***"
-    db_name = "***REMOVED_SECRET***"
+    db_name = "project2025"
 
     SQLALCHEMY_DATABASE_URI = (
         f"mysql+pymysql://{db_user_name}:{db_password}@{db_host}/{db_name}"

@@ -859,7 +859,7 @@ def rate_limited_processing():
 1. **"模块导入失败"**
    ```bash
    # 确保项目根目录在Python路径中
-   export PYTHONPATH="${PYTHONPATH}:/path/to/***REMOVED_SECRET***-backend"
+   export PYTHONPATH="${PYTHONPATH}:/path/to/project2025-backend"
    ```
 
 2. **"数据库连接失败"**

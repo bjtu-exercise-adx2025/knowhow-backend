@@ -3,7 +3,7 @@
 ## 项目结构
 
 ```
-***REMOVED_SECRET***-backend/
+project2025-backend/
 ├── app/                    # Flask 后端应用
 │   ├── api/               # API 接口
 │   │   └── v1/           # API v1 版本
@@ -73,7 +73,7 @@
 
 ```bash
 git clone <repository-url>
-cd ***REMOVED_SECRET***-backend
+cd project2025-backend
 ```
 
 ### 2. 快速环境设置（推荐）
@@ -222,7 +222,7 @@ server {
 
 ### 6. 使用 systemd 管理服务
 
-创建服务文件 `/etc/systemd/system/***REMOVED_SECRET***-backend.service`：
+创建服务文件 `/etc/systemd/system/project2025-backend.service`：
 ```ini
 [Unit]
 Description=Project 2025 System
@@ -231,9 +231,9 @@ After=network.target
 [Service]
 Type=simple
 User=www-data
-WorkingDirectory=/path/to/***REMOVED_SECRET***-backend
-Environment=PATH=/path/to/***REMOVED_SECRET***-backend/venv/bin
-ExecStart=/path/to/***REMOVED_SECRET***-backend/venv/bin/gunicorn --bind 0.0.0.0:8888 run:app
+WorkingDirectory=/path/to/project2025-backend
+Environment=PATH=/path/to/project2025-backend/venv/bin
+ExecStart=/path/to/project2025-backend/venv/bin/gunicorn --bind 0.0.0.0:8888 run:app
 Restart=always
 
 [Install]
@@ -242,9 +242,9 @@ WantedBy=multi-user.target
 
 启动服务：
 ```bash
-sudo systemctl enable ***REMOVED_SECRET***-backend
-sudo systemctl start ***REMOVED_SECRET***-backend
-sudo systemctl status ***REMOVED_SECRET***-backend
+sudo systemctl enable project2025-backend
+sudo systemctl start project2025-backend
+sudo systemctl status project2025-backend
 ```
 
 
@@ -274,5 +274,5 @@ python tests/test.py
 tail -f app/logs/app.log
 
 # 查看系统服务日志
-sudo journalctl -u ***REMOVED_SECRET***-backend -f
+sudo journalctl -u project2025-backend -f
 ```
