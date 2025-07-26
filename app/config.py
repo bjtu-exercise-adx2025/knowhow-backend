@@ -5,7 +5,7 @@ class Config:
     # 修改SQLALCHEMY_DATABASE_URI
     db_user_name = "***REMOVED_SECRET***"
     db_password = "***REMOVED_DB_PASSWORD***"
-    db_host = "rm-2ze9140q8270wnd20no.mysql.rds.aliyuncs.com"
+    db_host = "***REMOVED_DB_HOST***"
     db_name = "***REMOVED_SECRET***"
 
     SQLALCHEMY_DATABASE_URI = (
