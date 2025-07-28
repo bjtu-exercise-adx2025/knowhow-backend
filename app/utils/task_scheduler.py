@@ -38,6 +38,10 @@ class TaskScheduler:
         self.running = False
         self.scheduler_thread = None
 
+        # 用于跟踪正在处理的用户任务
+        self.user_tasks_lock = threading.Lock()  # 保护正在处理用户集合的锁
+        self.processing_users = set()  # 正在处理任务的用户ID集合
+
         # 初始化 LangGraph 服务
         try:
             self.langgraph_service = ArticleProcessorService()
@@ -83,18 +87,40 @@ class TaskScheduler:
 
     def _check_and_process_tasks(self):
         """检查并处理任务"""
+
         # 查找需要开始langgraph的任务（只需要检查langgraph_status，因为LangGraph会处理summary）
-        langgraph_tasks = GenerationTask.query.filter_by(
-            langgraph_status=0
-        ).all()
+        langgraph_tasks = GenerationTask.query.filter_by(langgraph_status=0).all()
+
 
         for task in langgraph_tasks:
-            self.executor.submit(self._begin_langgraph, task.id)
-            current_app.logger.info(f"提交langgraph任务: {task.id}")
+            # 检查该用户是否已经有任务在处理
+            if self._can_process_user_task(task.user_id):
+                # 标记用户开始处理任务
+                self._mark_user_processing(task.user_id)
+                # 提交任务到线程池
+                future = self.executor.submit(self._begin_langgraph, task.id, task.user_id)
+                current_app.logger.info(f"提交langgraph任务: {task.id} (用户: {task.user_id})")
+            else:
+                current_app.logger.info(f"用户 {task.user_id} 已有任务在处理中，跳过任务 {task.id}")
 
-        # 注释：LangGraph服务已集成summary和标签生成，不需要单独的summary任务
+    def _can_process_user_task(self, user_id):
+        """检查是否可以为该用户处理新任务"""
+        with self.user_tasks_lock:
+            return user_id not in self.processing_users
 
-    def _begin_langgraph(self, task_id):
+    def _mark_user_processing(self, user_id):
+        """标记用户开始处理任务"""
+        with self.user_tasks_lock:
+            self.processing_users.add(user_id)
+            current_app.logger.info(f"用户 {user_id} 开始处理任务，当前处理中用户: {self.processing_users}")
+
+    def _unmark_user_processing(self, user_id):
+        """取消标记用户处理任务"""
+        with self.user_tasks_lock:
+            self.processing_users.discard(user_id)
+            current_app.logger.info(f"用户 {user_id} 完成任务处理，当前处理中用户: {self.processing_users}")
+
+    def _begin_langgraph(self, task_id, user_id):
         """开始langgraph任务"""
         try:
             with self.app.app_context():
@@ -107,7 +133,7 @@ class TaskScheduler:
                 # 更新状态为processing
                 task.langgraph_status = 1
                 db.session.commit()
-                current_app.logger.info(f"开始处理langgraph任务: {task_id}")
+                current_app.logger.info(f"开始处理langgraph任务: {task_id} (用户: {user_id})")
 
                 # 获取关联的用户音频记录
                 task_mapping = TaskRecordsMapping.query.filter_by(
@@ -173,7 +199,7 @@ class TaskScheduler:
 
                     # 筛选相似度大于0.5的文章，最多取4篇
                     for i in sorted_indices:
-                        if similarities[i] > 0.5 and len(top_articles) < 4:
+                        if similarities[i] > 0.4 and len(top_articles) < 6:
                             top_articles.append(
                                 {
                                     "id": user_articles[i].id,
@@ -196,27 +222,33 @@ class TaskScheduler:
                     data = result.get("data", {})
                     created_article_ids = []
                     updated_article_ids = []
-                    
+
                     # 处理created_articles
                     if data.get("created_articles"):
                         for created_article in data["created_articles"]:
                             created_article_ids.append(created_article["new_id"])
-                    
-                    # 处理updated_articles  
+
+                    # 处理updated_articles
                     if data.get("updated_articles"):
                         for updated_article in data["updated_articles"]:
                             updated_article_ids.append(updated_article["id"])
-                    
+
                     # 更新任务状态和文章ID列表
                     task.langgraph_status = 2
-                    task.summary_status = 2  # 同时将summary状态设为完成，因为LangGraph已经处理了摘要
+                    task.summary_status = 1
                     task.created_articles = created_article_ids
                     task.updated_articles = updated_article_ids
                     db.session.commit()
-                    current_app.logger.info(f"Langgraph任务完成: {task_id}, 创建文章: {len(created_article_ids)}, 更新文章: {len(updated_article_ids)}")
+                    current_app.logger.info(
+                        f"Langgraph任务完成: {task_id}, 创建文章: {len(created_article_ids)}, 更新文章: {len(updated_article_ids)}"
+                    )
 
                     # 处理返回结果中的文章，为新创建和更新的文章生成标签
                     self._process_article_tags(result, task.user_id)
+
+                    task.summary_status = 2 # tag完成后 处理
+                    db.session.commit()
+
                 else:
                     # 更新状态为失败
                     task.langgraph_status = 3
@@ -237,6 +269,10 @@ class TaskScheduler:
                         db.session.commit()
             except:
                 pass
+
+        finally:
+            # 无论成功还是失败，都要取消用户处理标记
+            self._unmark_user_processing(user_id)
 
 
     def _call_langgraph_service(self, transcript_id, similar_articles, user_id):
@@ -289,30 +325,42 @@ class TaskScheduler:
                 # 从LangGraph返回结果中获取data字段
                 data = langgraph_result.get("data", {})
                 article_ids_to_process = []
-                
+
                 # 处理created_articles
                 if data.get("created_articles"):
                     for created_article in data["created_articles"]:
                         article_ids_to_process.append(created_article["new_id"])
+
                         current_app.logger.info(f"添加新创建文章到标签生成队列: {created_article['new_id']}")
-                
+
+
                 # 处理updated_articles
                 # if data.get("updated_articles"):
                 #     for updated_article in data["updated_articles"]:
                 #         article_ids_to_process.append(updated_article["id"])
                 #         current_app.logger.info(f"添加更新文章到标签生成队列: {updated_article['id']}")
-                
-                current_app.logger.info(f"总共需要生成标签的文章数量: {len(article_ids_to_process)}")
-                
+
+
+                current_app.logger.info(
+                    f"总共需要生成标签的文章数量: {len(article_ids_to_process)}"
+                )
+
+
                 # 为每篇文章生成标签
                 for article_id in article_ids_to_process:
                     self._generate_tags_for_article(article_id, user_id)
-                
-                current_app.logger.info(f"完成为{len(article_ids_to_process)}篇文章生成标签")
-        
+
+
+                current_app.logger.info(
+                    f"完成为{len(article_ids_to_process)}篇文章生成标签"
+                )
+
+
         except Exception as e:
             current_app.logger.error(f"处理文章标签失败: {str(e)}")
-            current_app.logger.error(f"LangGraph结果格式: {langgraph_result}")  # 添加调试信息
+            current_app.logger.error(
+                f"LangGraph结果格式: {langgraph_result}"
+            )  # 添加调试信息
 
     def _generate_tags_for_article(self, article_id, user_id):
         """为指定文章生成标签"""
@@ -323,31 +371,34 @@ class TaskScheduler:
                 if not article:
                     current_app.logger.error(f"文章{article_id}不存在")
                     return
-                
+
                 current_app.logger.info(f"开始为文章{article_id}生成标签")
-                
+
                 # 构建完整的文章内容
                 full_article_content = f"{article.title}\n\n{article.content or ''}\n\n{article.summary or ''}"
                 current_app.logger.info(f"文章内容长度: {len(full_article_content)}")
-                
+
                 # 生成标签
                 tags = generate_tags_from_article(full_article_content, user_id)
                 current_app.logger.info(f"生成的标签: {tags}")
-                
+
                 if tags:
                     # 为文章添加标签
                     add_tags_to_article(article_id, tags, user_id)
-                    current_app.logger.info(f"成功为文章{article_id}添加了{len(tags)}个标签")
-                    
+
+                    current_app.logger.info(
+                        f"成功为文章{article_id}添加了{len(tags)}个标签"
+                    )
+
+
                     # 提交数据库更改
                     db.session.commit()
                 else:
                     current_app.logger.warning(f"文章{article_id}未生成任何标签")
-        
+
         except Exception as e:
             current_app.logger.error(f"为文章{article_id}生成标签失败: {str(e)}")
             db.session.rollback()
-
 
 
 # 全局调度器实例

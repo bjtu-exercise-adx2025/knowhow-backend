@@ -24,5 +24,5 @@ class Tag(db.Model, SerializerMixin):
         db.DateTime, nullable=False, default=datetime.now(dt.UTC), comment="创建时间"
     )
 
-    # 添加唯一约束
-    __table_args__ = (db.UniqueConstraint("name", name="uk_name"),)
+    # 添加唯一约束：同一用户内标签名唯一
+    __table_args__ = (db.UniqueConstraint("user_id", "name", name="uk_user_tag"),)

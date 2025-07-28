@@ -1,4 +1,6 @@
 import json
+import re
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -60,7 +62,7 @@ def create_text_record():
         user_id = data.get("user_id")
         text = data.get("text")
 
-        # 参数验证
+        # 基础参数验证
         if not user_id or not text:
             return {"message": "用户ID和文字内容不能为空"}, 400
 
@@ -70,17 +72,36 @@ def create_text_record():
         if not isinstance(text, str) or len(text.strip()) == 0:
             return {"message": "文字内容不能为空"}, 400
 
+        # 文字长度验证
+        text_cleaned = text.strip()
+        text_length = len(text_cleaned)
+
+        # 设置长度限制（可根据需要调整）
+        MIN_TEXT_LENGTH = 10
+        MAX_TEXT_LENGTH = 1000
+
+        if text_length < MIN_TEXT_LENGTH:
+            return {"message": f"文字内容至少需要{MIN_TEXT_LENGTH}个字符"}, 400
+
+        if text_length > MAX_TEXT_LENGTH:
+            return {"message": f"文字内容不能超过{MAX_TEXT_LENGTH}个字符"}, 400
+
+        # 内容安全检查
+        is_safe, safety_message = validate_text_content(text_cleaned)
+        if not is_safe:
+            return {"message": safety_message}, 400
+
         # 检查用户是否存在
         user = User.query.get(user_id)
         if not user:
             return {"message": "用户不存在"}, 404
 
         # 1. 生成标题
-        title = generate_title_only(text, user_id)
+        title = generate_title_only(text_cleaned, user_id)
 
         # 2. 创建音频记录（复用表结构存储文字），保存标题
         audio_record = UserAudioRecord(
-            user_id=user_id, transcript=text.strip(), title=title
+            user_id=user_id, transcript=text_cleaned, title=title
         )
         db.session.add(audio_record)
         db.session.flush()  # 获取记录ID
@@ -114,6 +135,152 @@ def create_text_record():
         current_app.logger.error(f"创建文字记录失败: {str(e)}")
         db.session.rollback()
         return {"message": "创建记录失败，请稍后重试"}, 500
+
+
+def validate_text_content(text: str) -> tuple[bool, str]:
+    """
+    验证文本内容的安全性
+
+    Args:
+        text: 要验证的文本
+
+    Returns:
+        Tuple[bool, str]: (是否安全, 错误信息)
+    """
+    # # 1. 检查是否包含除中英文外的其他语言
+    # if not is_chinese_english_only(text):
+    #     return False, "文本只能包含中文和英文字符"
+
+    # 2. 检查特殊符号和字符
+    # if contains_suspicious_symbols(text):
+    #     return False, "文本包含不允许的特殊字符或符号"
+
+    # 3. 检查敏感词
+    if contains_sensitive_words(text):
+        return False, "文本包含敏感内容，请修改后重试"
+
+    # 4. 检查注入攻击模式
+    if contains_injection_patterns(text):
+        return False, "文本包含潜在的安全风险内容"
+
+    return True, ""
+
+
+def is_chinese_english_only(text: str) -> bool:
+    """
+    检查文本是否只包含中英文字符
+    """
+    # 允许的字符范围
+    allowed_pattern = re.compile(r'^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff'  # 中文字符
+                                 r'a-zA-Z'  # 英文字母
+                                 r'0-9'  # 数字
+                                 r'\s'  # 空白字符
+                                 r'.,!?;:()[]{}"\'-'  # 基本标点符号
+                                 r'，。！？；：（）【】""''、'  # 中文标点
+                                 r']+$')
+
+    return bool(allowed_pattern.match(text))
+
+
+def contains_suspicious_symbols(text: str) -> bool:
+    """
+    检查是否包含可疑的特殊符号
+    """
+    # 不允许的特殊字符模式
+    suspicious_patterns = [
+        r'[<>{}\\|`~#$%^&*+=]',  # 可能用于代码注入的符号
+        r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]',  # 控制字符
+        r'[\u2000-\u206f\u2e00-\u2e7f]',  # 特殊空格和标点
+        r'[\ufeff\ufffe\uffff]',  # BOM和其他特殊字符
+    ]
+
+    for pattern in suspicious_patterns:
+        if re.search(pattern, text):
+            return True
+
+    return False
+
+
+def contains_sensitive_words(text: str) -> bool:
+    """
+    检查是否包含敏感词
+    """
+    # 敏感词列表（这里只是示例，实际使用时应该从配置文件或数据库读取）
+    sensitive_words = [
+        # AI攻击相关
+        'ignore previous instructions',
+        'forget everything above',
+        'system prompt',
+        'jailbreak',
+        'prompt injection',
+        'override system',
+        'act as',
+        'pretend you are',
+
+        # 中文攻击模式
+        '忽略之前的指令',
+        '忘记上面的内容',
+        '系统提示',
+        '扮演',
+        '假装你是',
+        '绕过限制',
+
+        # SQL注入相关
+        'drop table',
+        'delete from',
+        'union select',
+        'insert into',
+        'update set',
+
+        # 其他敏感内容可以根据具体业务需求添加
+    ]
+
+    text_lower = text.lower()
+    for word in sensitive_words:
+        if word.lower() in text_lower:
+            return True
+
+    return False
+
+
+def contains_injection_patterns(text: str) -> bool:
+    """
+    检查是否包含注入攻击模式
+    """
+    injection_patterns = [
+        r'<script[^>]*>.*?</script>',  # XSS脚本
+        r'javascript:',  # JavaScript协议
+        r'on\w+\s*=',  # 事件处理器
+        r'eval\s*\(',  # eval函数
+        r'exec\s*\(',  # exec函数
+        r'system\s*\(',  # system调用
+        r'\$\{.*?\}',  # 模板注入
+        r'\{\{.*?\}\}',  # 模板注入
+        r'#{.*?}',  # 表达式注入
+        r'@\{.*?\}',  # OGNL注入
+    ]
+
+    for pattern in injection_patterns:
+        if re.search(pattern, text, re.IGNORECASE | re.DOTALL):
+            return True
+
+    return False
+
+
+def clean_text(text: str) -> str:
+    """
+    清理文本，移除潜在的危险字符
+    """
+    # 移除控制字符
+    text = ''.join(char for char in text if unicodedata.category(char)[0] != 'C' or char in '\n\r\t')
+
+    # 标准化Unicode字符
+    text = unicodedata.normalize('NFKC', text)
+
+    # 移除多余的空白字符
+    text = re.sub(r'\s+', ' ', text.strip())
+
+    return text
 
 
 # def generate_title_tags(text: str, user_id: int) -> str | tuple[Any, Any]:
@@ -245,6 +412,8 @@ def generate_title_only(text: str, user_id: int) -> str:
        * 直述核心：用主谓结构直接呈现核心发现或结论
        * 信息完整：包含关键主体+核心动作+量化结果（如有）
        * 语言规范：使用书面语，禁止夸张副词和情绪化表达
+       * 只保留你的核心发现或结论，**不要添加任何其他内容，不要猜测或添加任何其他内容**
+       * 由于待处理文本是语音转文字，因此可能会有不准确的地方，你可以根据上下文进行修正
 
     # 技术规范
     1. 禁止使用以下手法：
@@ -295,24 +464,22 @@ def generate_tags_from_article(article_content: str, user_id: int) -> list[str]:
 
     if len(tags) == 0:
         prompt = f"""
-        # 角色
-        资深内容策略专家，擅长提炼文本核心概念为概括性标签
+# 角色
+你是一位专业的知识管理专家和信息架构师，擅长将零散信息归纳到高度概括的核心分类中。
 
-        # 任务
-        为【文章内容】生成2-5个高度概括的标签（Tags），要求像小红书标签那样简洁通用
+# 任务
+为我提供的【文章内容】归纳出1-3个最核心的顶级分类标签（Tags）。所有标签都需要你根据文章内容从零开始创作。必须至少生成一个标签。
 
-        # 核心原则
-        1. **概括性优先**：每个标签必须代表一个核心概念类别（如"旅行"而非"三亚自由行"，"天气"而非"晴空万里"）
-        2. **简洁表达**：
-           - 主要使用2-3字短标签（占60%以上）
-           - 必要时用4字标签（不超过40%）
-           - 禁用具体描述性词汇
-        3. **概念覆盖**：组合标签需覆盖文章核心主题
+# 工作流程
+1. **理解主旨**：深入阅读【文章内容】，精准把握其探讨的核心领域和主题。
+2. **归纳分类**：将文章主旨映射到1-3个广为人知、高度概括的通用分类标签上。你需要从零开始创建这些分类标签。
+3. 如果用户的内容没有明确的核心领域和主题，则返回空数组，不用生成标签。
 
-        # 工作流程
-        1. 识别内容中的核心概念类别（如旅行/科技/健康）
-        2. 提炼为最简概括词（避免细节描述）
-        3. 确保标签具备通用性和复用性
+# 约束与要求
+*   **表标签层级**：必须是顶级、宽泛的分类标签，例如“科技”、“健康”、“财经”、“教育”。绝对不要生成“AI大模型”、“减肥食谱”这类具体或垂直的细分标签。
+*   **标签分类示例**：你生成的分类应该像这些例子一样宽泛：`运动`, `理财`, `饮食`, `医疗`, `创业`, `心理`, `职场`, `数码`, `汽车`, `旅行`。
+*   **数量限制**：严格控制在1到3个之间。
+*   **输出格式**：必须返回一个单一的JSON对象，结构必须为 {{"tags": ["tag1", "tag2", ...]}}。
 
         # 硬性要求
         - 标签数量：2-5个
@@ -327,25 +494,24 @@ def generate_tags_from_article(article_content: str, user_id: int) -> list[str]:
     else:
         tag_names = [tag.name for tag in tags]
         prompt = f"""
-        # 角色
-        资深内容策略专家，擅长复用现有标签体系
+# 角色
+你是一位专业的知识管理专家和信息架构师，擅长将零散信息归纳到高度概括的核心分类中。
 
-        # 任务
-        为【文章内容】匹配2-5个标签，优先使用【已有Tag库】中的概括性标签
+# 任务
+为我提供的【文章内容】生成1-3个最相关的标签（Tags）。
 
-        # 核心原则
-        1. **标签优先级**：
-           - 首选：直接复用【已有Tag库】中匹配的概括性标签
-           - 次选：仅当库中无合适标签时，创建新概括标签
-        2. **概括性标准**：
-           - 所有标签必须代表概念类别
-           - 新标签需符合2-3字为主原则
-           - 禁用具体描述（如用"穿搭"而非"牛仔外套"）
+# 工作流程
+1. **理解主旨**：深入阅读【文章内容】，精准把握其探讨的核心领域和主题。
+2. **核心标签提炼**：基于你的分析，直接创作1-3个标签。这些标签必须是原文核心概念的精炼概括，并具备以下特点：
+   * **优先匹配**：将你分析出的核心概念与【已有Tag库】进行比对。如果文章内容与库中某个Tag高度相关，请优先使用。
+   * **高度概括性**：将文章主旨映射到1-3个广为人知、高度概括的通用分类标签上。
+3. 如果用户的内容没有明确的核心领域和主题，则返回空数组，不用生成标签。
 
-        # 工作流程
-        1. 检查内容核心概念是否被【已有Tag库】覆盖
-        2. 优先选择库中匹配的概括性标签
-        3. 必要时创建新标签（需符合概括性原则）
+# 约束与要求
+*   **表标签层级**：必须是顶级、宽泛的分类标签，例如“科技”、“健康”、“财经”、“教育”。绝对不要生成“AI大模型”、“减肥食谱”这类具体或垂直的细分标签。
+*   **标签分类示例**：你生成的分类应该像这些例子一样宽泛：`运动`, `理财`, `饮食`, `医疗`, `创业`, `心理`, `职场`, `数码`, `汽车`, `旅行`。
+*   **数量限制**：严格控制在1到3个之间。
+*   **输出格式**：必须返回一个单一的JSON对象，结构必须为 {{"tags": ["tag1", "tag2", ...]}}。
 
         # 硬性要求
         - 复用率：库中标签优先使用率 ≥70%
@@ -365,10 +531,10 @@ def generate_tags_from_article(article_content: str, user_id: int) -> list[str]:
 
     try:
         # 打印prompt
-        print(f"⚠️⚠️ prompt: {prompt}")
+        # print(f"⚠️⚠️ prompt: {prompt}")
         json_string = llm_call_qwen3_8b(
             user_content=prompt,
-            system_content="你是一个智能助手，请根据用户输入的文章内容生成相关的标签。",
+            system_content="你是一个智能助手，请根据用户要求，为文章进行高阶分类。",
         )
         data = json.loads(json_string)
         return data["tags"]
@@ -387,6 +553,11 @@ def add_tags_to_article(article_id: int, tag_names: list[str], user_id: int):
         user_id: 用户ID
     """
     try:
+        # 如果标签列表为空，添加"其他"
+        if not tag_names or len(tag_names) == 0:
+            tag_names = ["其他"]
+            current_app.logger.info(f"文章{article_id}没有生成标签，自动添加'其他'标签")
+
         # 处理标签
         tag_ids = []
         for tag_name in tag_names:
@@ -655,7 +826,7 @@ def get_task_status(task_id):
         # 获取创建和更新的文章信息
         created_articles_info = []
         updated_articles_info = []
-        
+
         # 处理创建的文章
         if task.created_articles:
             for article_id in task.created_articles:
@@ -665,7 +836,7 @@ def get_task_status(task_id):
                     tags = []
                     for tag in article.tags:
                         tags.append({"id": tag.id, "name": tag.name})
-                    
+
                     article_info = {
                         "id": article.id,
                         "title": article.title,
@@ -675,11 +846,13 @@ def get_task_status(task_id):
                         "created_at": article.created_at.isoformat(),
                         "updated_at": article.updated_at.isoformat(),
                         "finished_at": (
-                            article.finished_at.isoformat() if article.finished_at else None
+                            article.finished_at.isoformat()
+                            if article.finished_at
+                            else None
                         ),
                     }
                     created_articles_info.append(article_info)
-        
+
         # 处理更新的文章
         if task.updated_articles:
             for article_id in task.updated_articles:
@@ -689,7 +862,7 @@ def get_task_status(task_id):
                     tags = []
                     for tag in article.tags:
                         tags.append({"id": tag.id, "name": tag.name})
-                    
+
                     article_info = {
                         "id": article.id,
                         "title": article.title,
@@ -699,7 +872,9 @@ def get_task_status(task_id):
                         "created_at": article.created_at.isoformat(),
                         "updated_at": article.updated_at.isoformat(),
                         "finished_at": (
-                            article.finished_at.isoformat() if article.finished_at else None
+                            article.finished_at.isoformat()
+                            if article.finished_at
+                            else None
                         ),
                     }
                     updated_articles_info.append(article_info)
@@ -789,20 +964,16 @@ def get_my_articles():
         if tag_id:
             # 通过tag_id筛选文章：需要连接ArticleTag表
             articles_query = (
-                Article.query
-                .join(ArticleTag, Article.id == ArticleTag.article_id)
-                .filter(
-                    Article.author_id == user_id,
-                    ArticleTag.tag_id == tag_id
-                )
-                .order_by(Article.created_at.desc())
+                Article.query.join(ArticleTag, Article.id == ArticleTag.article_id)
+                .filter(Article.author_id == user_id, ArticleTag.tag_id == tag_id)
+                .order_by(Article.updated_at.desc())
             )
         else:
             # 返回用户的所有文章
             articles_query = Article.query.filter_by(author_id=user_id).order_by(
-                Article.created_at.desc()
+                Article.updated_at.desc()
             )
-        
+
         total = articles_query.count()
         articles = articles_query.offset((page - 1) * per_page).limit(per_page).all()
 
@@ -893,7 +1064,7 @@ def get_article_recommendations():
         # Mock推荐逻辑：获取其他用户的已发布文章，按时间倒序
         articles_query = Article.query.filter(
             Article.author_id != user_id, Article.status == "published"
-        ).order_by(Article.created_at.desc())
+        ).order_by(Article.finished_at.desc())
 
         total = articles_query.count()
         articles = articles_query.offset((page - 1) * per_page).limit(per_page).all()
@@ -1026,7 +1197,9 @@ def get_user_records():
         # 使用LEFT JOIN确保即使没有对应的task也能返回record
         records_query = (
             db.session.query(UserAudioRecord, GenerationTask)
-            .outerjoin(TaskRecordsMapping, UserAudioRecord.id == TaskRecordsMapping.record_id)
+            .outerjoin(
+                TaskRecordsMapping, UserAudioRecord.id == TaskRecordsMapping.record_id
+            )
             .outerjoin(GenerationTask, TaskRecordsMapping.task_id == GenerationTask.id)
             .filter(UserAudioRecord.user_id == user_id)
             .order_by(UserAudioRecord.created_at.desc())
@@ -1042,7 +1215,7 @@ def get_user_records():
                 "transcript": record.transcript,
                 "title": record.title,
                 "record_created_at": record.created_at.isoformat(),
-                "task": None
+                "task": None,
             }
 
             # 如果存在关联的任务，添加任务信息
@@ -1055,7 +1228,7 @@ def get_user_records():
                     "created_articles": task.created_articles or [],
                     "updated_articles": task.updated_articles or [],
                     "task_created_at": task.created_at.isoformat(),
-                    "task_updated_at": task.updated_at.isoformat()
+                    "task_updated_at": task.updated_at.isoformat(),
                 }
 
             record_list.append(record_data)
@@ -1074,136 +1247,132 @@ def get_user_records():
 @article_bp.route("/articles/relationships", methods=["GET"])
 def get_article_relationships():
     """
-    获取所有文章引用关系
+    获取指定用户的标签、文章及其引用关系
     ---
     parameters:
-        - name: page
+        - name: user_id
           in: query
-          required: false
+          required: true
           type: integer
-          default: 1
-          description: 页码
-        - name: per_page
-          in: query
-          required: false
-          type: integer
-          default: 20
-          description: 每页数量
-        - name: citing_article_id
-          in: query
-          required: false
-          type: integer
-          description: 引用文章ID（筛选条件）
-        - name: referenced_article_id
-          in: query
-          required: false
-          type: integer
-          description: 被引用文章ID（筛选条件）
+          description: 用户ID
     responses:
         200:
-            description: 成功获取文章关系列表
+            description: 成功获取用户标签和文章关系信息
             schema:
                 type: object
                 properties:
-                    message:
+                    user_id:
+                        type: integer
+                    username:
                         type: string
-                    total:
-                        type: integer
-                    page:
-                        type: integer
-                    per_page:
-                        type: integer
-                    relationships:
+                    tags:
                         type: array
                         items:
                             type: object
                             properties:
                                 id:
                                     type: integer
+                                name:
+                                    type: string
+                                articles:
+                                    type: array
+                                    items:
+                                        type: object
+                                        properties:
+                                            id:
+                                                type: integer
+                                            name:
+                                                type: string
+                    relationships:
+                        type: array
+                        items:
+                            type: object
+                            properties:
                                 citing_article:
                                     type: object
                                     properties:
                                         id:
                                             type: integer
-                                        title:
-                                            type: string
-                                        author_name:
-                                            type: string
                                 referenced_article:
                                     type: object
                                     properties:
                                         id:
                                             type: integer
-                                        title:
-                                            type: string
-                                        author_name:
-                                            type: string
-                                created_at:
-                                    type: string
-                                    format: date-time
         400:
             description: 请求参数错误
+        404:
+            description: 用户不存在
         500:
             description: 服务器内部错误
     """
     try:
-        page = request.args.get("page", type=int, default=1)
-        per_page = request.args.get("per_page", type=int, default=20)
-        citing_article_id = request.args.get("citing_article_id", type=int)
-        referenced_article_id = request.args.get("referenced_article_id", type=int)
+        user_id = request.args.get("user_id", type=int)
 
-        if page < 1 or per_page < 1 or per_page > 100:
-            return {"message": "页码和每页数量参数不合法"}, 400
+        if not user_id:
+            return {"message": "用户ID不能为空"}, 400
 
-        # 构建查询条件
-        query = ArticleRelationship.query
-        
-        if citing_article_id:
-            query = query.filter(ArticleRelationship.citing_article_id == citing_article_id)
-        
-        if referenced_article_id:
-            query = query.filter(ArticleRelationship.referenced_article_id == referenced_article_id)
+        # 检查用户是否存在
+        user = User.query.get(user_id)
+        if not user:
+            return {"message": "用户不存在"}, 404
 
-        # 按创建时间倒序排列
-        query = query.order_by(ArticleRelationship.created_at.desc())
-        
-        # 分页查询
-        total = query.count()
-        relationships = query.offset((page - 1) * per_page).limit(per_page).all()
+        # 获取用户的所有标签
+        tags = (
+            Tag.query.filter_by(user_id=user_id).order_by(Tag.created_at.desc()).all()
+        )
 
-        # 格式化返回数据
-        relationship_list = []
-        for rel in relationships:
-            # 获取引用文章信息
-            citing_article = Article.query.get(rel.citing_article_id)
-            citing_author = User.query.get(citing_article.author_id) if citing_article else None
-            
-            # 获取被引用文章信息
-            referenced_article = Article.query.get(rel.referenced_article_id)
-            referenced_author = User.query.get(referenced_article.author_id) if referenced_article else None
+        # 构建标签及其文章的数据结构
+        tags_data = []
+        for tag in tags:
+            # 获取该标签下的所有文章
+            articles_query = (
+                Article.query.join(ArticleTag, Article.id == ArticleTag.article_id)
+                .filter(ArticleTag.tag_id == tag.id)
+                .order_by(Article.created_at.desc())
+            )
+            articles = articles_query.all()
 
-            relationship_data = {
-                "id": rel.id,
-                "citing_article": {
-                    "id": citing_article.id if citing_article else None,
-                    "title": citing_article.title if citing_article else "文章已删除",
-                    "author_name": citing_author.username if citing_author else "作者未知"
-                },
-                "referenced_article": {
-                    "id": referenced_article.id if referenced_article else None,
-                    "title": referenced_article.title if referenced_article else "文章已删除",
-                    "author_name": referenced_author.username if referenced_author else "作者未知"
-                },
-                "created_at": rel.created_at.isoformat()
-            }
-            relationship_list.append(relationship_data)
+            # 构建文章列表
+            articles_data = []
+            for article in articles:
+                articles_data.append({"id": article.id, "name": article.title})
+
+            tags_data.append(
+                {"id": tag.id, "name": tag.name, "articles": articles_data}
+            )
+
+        # 获取该用户文章之间的引用关系
+        user_article_ids = [
+            article.id for article in Article.query.filter_by(author_id=user_id).all()
+        ]
+
+        relationships_data = []
+        if user_article_ids:
+            # 查找该用户文章之间的引用关系
+            relationships = (
+                ArticleRelationship.query.filter(
+                    ArticleRelationship.citing_article_id.in_(user_article_ids),
+                    ArticleRelationship.referenced_article_id.in_(user_article_ids),
+                )
+                .order_by(ArticleRelationship.created_at.desc())
+                .all()
+            )
+
+            # 构建关系数据
+            for rel in relationships:
+                relationships_data.append(
+                    {
+                        "citing_article": {"id": rel.citing_article_id},
+                        "referenced_article": {"id": rel.referenced_article_id},
+                    }
+                )
 
         return {
-            "message": "获取文章关系列表成功",
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "relationships": relationship_list,
+            "user_id": user.id,
+            "username": user.username,
+            "avatar_url": user.avatar_url,
+            "tags": tags_data,
+            "relationships": relationships_data,
         }, 200
 
     except Exception as e:
@@ -1277,17 +1446,19 @@ def get_article_detail(article_id):
                     {"id": cite_article.id, "title": cite_article.title}
                 )
 
-        # 获取该文章引用的文章的详细概览信息
+        # 获取该文章引用的文章和引用该文章的文章的详细概览信息
         recommendations = []
+
+        # 1. 获取该文章引用的文章（被该文章引用的文章）
         references = ArticleRelationship.query.filter_by(
             citing_article_id=article_id
         ).all()
-        
+
         for ref in references:
             ref_article = Article.query.get(ref.referenced_article_id)
             if not ref_article:
                 continue  # 跳过已删除的文章
-                
+
             ref_author = User.query.get(ref_article.author_id)
             if not ref_author:
                 continue  # 跳过作者不存在的文章
@@ -1306,6 +1477,39 @@ def get_article_detail(article_id):
                         "avatar_url": ref_author.avatar_url,
                     },
                     "created_at": ref_article.created_at.isoformat(),
+                    "relationship_type": "referenced_by_current",  # 被当前文章引用
+                }
+            )
+
+        # 2. 获取引用该文章的文章（引用当前文章的文章）
+        citations = ArticleRelationship.query.filter_by(
+            referenced_article_id=article_id
+        ).all()
+
+        for cite in citations:
+            cite_article = Article.query.get(cite.citing_article_id)
+            if not cite_article:
+                continue  # 跳过已删除的文章
+
+            cite_author = User.query.get(cite_article.author_id)
+            if not cite_author:
+                continue  # 跳过作者不存在的文章
+
+            cite_tags = [{"id": tag.id, "name": tag.name} for tag in cite_article.tags]
+
+            recommendations.append(
+                {
+                    "id": cite_article.id,
+                    "title": cite_article.title,
+                    "summary": cite_article.summary,
+                    "tags": cite_tags,
+                    "author": {
+                        "id": cite_author.id,
+                        "username": cite_author.username,
+                        "avatar_url": cite_author.avatar_url,
+                    },
+                    "created_at": cite_article.created_at.isoformat(),
+                    "relationship_type": "citing_current",  # 引用当前文章
                 }
             )
 
@@ -1338,3 +1542,351 @@ def get_article_detail(article_id):
     except Exception as e:
         current_app.logger.error(f"获取文章详情失败: {str(e)}")
         return {"message": "获取文章详情失败，请稍后重试"}, 500
+
+
+@article_bp.route("/articles/reset-demo-data", methods=["POST"])
+def reset_demo_data():
+    """
+    重置用户ID=5的演示数据
+    ---
+    responses:
+        200:
+            description: 成功重置演示数据
+            schema:
+                type: object
+                properties:
+                    message:
+                        type: string
+                    reset_stats:
+                        type: object
+                        properties:
+                            deleted_articles:
+                                type: integer
+                            deleted_tags:
+                                type: integer
+                            deleted_tasks:
+                                type: integer
+                            deleted_records:
+                                type: integer
+                            created_articles:
+                                type: integer
+                            created_tags:
+                                type: integer
+                            created_relationships:
+                                type: integer
+        500:
+            description: 服务器内部错误
+    """
+    target_user_id = 5
+    
+    try:
+        # 开始事务
+        current_app.logger.info(f"开始重置用户ID={target_user_id}的演示数据")
+        
+        # 检查用户是否存在
+        user = User.query.get(target_user_id)
+        if not user:
+            return {"message": f"用户ID={target_user_id}不存在"}, 404
+        
+        # 统计信息
+        reset_stats = {
+            "deleted_articles": 0,
+            "deleted_tags": 0,
+            "deleted_tasks": 0,
+            "deleted_records": 0,
+            "created_articles": 0,
+            "created_tags": 0,
+            "created_relationships": 0
+        }
+        
+        # === 第一阶段：删除现有数据（按外键依赖顺序） ===
+        
+        # 1. 获取用户相关的所有ID
+        user_articles = Article.query.filter_by(author_id=target_user_id).all()
+        user_article_ids = [a.id for a in user_articles]
+        
+        user_tags = Tag.query.filter_by(user_id=target_user_id).all()
+        user_tag_ids = [t.id for t in user_tags]
+        
+        user_tasks = GenerationTask.query.filter_by(user_id=target_user_id).all()
+        user_task_ids = [t.id for t in user_tasks]
+        
+        user_records = UserAudioRecord.query.filter_by(user_id=target_user_id).all()
+        user_record_ids = [r.id for r in user_records]
+        
+        current_app.logger.info(f"找到待删除数据: 文章{len(user_article_ids)}篇, 标签{len(user_tag_ids)}个, 任务{len(user_task_ids)}个, 记录{len(user_record_ids)}个")
+        
+        # 2. 删除文章引用关系
+        if user_article_ids:
+            citing_count = ArticleRelationship.query.filter(
+                ArticleRelationship.citing_article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+            
+            referenced_count = ArticleRelationship.query.filter(
+                ArticleRelationship.referenced_article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+            
+            current_app.logger.info(f"删除文章引用关系: 作为引用方{citing_count}个, 作为被引用方{referenced_count}个")
+        
+        # 3. 删除文章-标签关联
+        if user_article_ids:
+            ArticleTag.query.filter(
+                ArticleTag.article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+        
+        if user_tag_ids:
+            ArticleTag.query.filter(
+                ArticleTag.tag_id.in_(user_tag_ids)
+            ).delete(synchronize_session=False)
+        
+        # 4. 删除任务-记录映射
+        if user_task_ids:
+            TaskRecordsMapping.query.filter(
+                TaskRecordsMapping.task_id.in_(user_task_ids)
+            ).delete(synchronize_session=False)
+        
+        if user_record_ids:
+            TaskRecordsMapping.query.filter(
+                TaskRecordsMapping.record_id.in_(user_record_ids)
+            ).delete(synchronize_session=False)
+        
+        # 5. 删除实体数据
+        reset_stats["deleted_articles"] = Article.query.filter_by(author_id=target_user_id).delete()
+        reset_stats["deleted_tags"] = Tag.query.filter_by(user_id=target_user_id).delete()
+        reset_stats["deleted_tasks"] = GenerationTask.query.filter_by(user_id=target_user_id).delete()
+        reset_stats["deleted_records"] = UserAudioRecord.query.filter_by(user_id=target_user_id).delete()
+        
+        current_app.logger.info(f"完成数据清理阶段")
+        
+        # === 第二阶段：创建预制数据 ===
+        
+        # 1. 创建预制标签
+        demo_tags_data = ["创新", "科技"]
+        demo_tags = {}
+        
+        for tag_name in demo_tags_data:
+            tag = Tag(user_id=target_user_id, name=tag_name)
+            db.session.add(tag)
+            db.session.flush()  # 获取ID
+            demo_tags[tag_name] = tag
+            reset_stats["created_tags"] += 1
+        
+        current_app.logger.info(f"创建预制标签: {list(demo_tags.keys())}")
+        
+        # 2. 创建预制文章
+        demo_articles_data = [
+            {
+                "title": "中国最大的青年黑客马拉松：由学生社区驱动的创新平台",
+                "summary": "这是一个专为年轻创作者打造的盛大平台，被誉为中国最大的黑客马拉松。其特色在于完全由学生和社区组织，为参与者提供全方位的支持。",
+                "content": "这是一个专为年轻工程师、设计师和创造者打造的盛大平台，被誉为中国最大、也是首个以青年为导向的黑客马拉松。\n\n### 青年驱动的社区文化\n\n该活动最特别之处在于它完全由学生和社区自发组织，展现了青年一代的领导力和创造力。为了让参与者能全身心投入创新，活动提供了周到的后勤保障，包括每日三餐以及无限量的零食、咖啡和饮料，营造了开放协作的社区氛围。\n\n### 2024年活动规模与影响力\n\n以在杭州举办的AdventureX 2024为例，其规模和影响力十分显著：\n- **参与人员**：活动聚集了247名来自世界各地的年轻工程师、设计师和梦想家。整个活动周吸引了超过200名黑客和2000名访客参与。\n- **产出项目**：活动期间共诞生了50多个创新项目。\n- **企业合作**：获得了将近100家公司的赞助支持。\n- **知识分享**：举办了20场不同主题的工作坊，内容涵盖人工智能（AI）、虚拟现实/增强现实（VR/AR）、Web3等前沿技术领域。",
+                "tags": ["科技", "创新"],
+                "status": "published"
+            },
+            {
+                "title": "AdventureX 2025午餐供应商变更及初步反馈",
+                "summary": "由于参与人数增加，AdventureX 2025的午餐供应商发生变更。与2024年相比，新供应商提供的餐食收到了不太理想的初步反馈。",
+                "content": "### 2025年午餐安排调整\nAdventureX 2025年的午餐供应方发生了变更。与2024年由湖畔提供的午餐不同，今年的午餐改由一家新的供应商负责。\n\n### 变更原因及反馈\n此次变更的主要原因是活动参与人数大幅增加，超出了湖畔的供应能力。然而，与会者对新供应商的餐食反馈普遍不佳，认为其口味不如往年。",
+                "tags": ["科技", "创新"],
+                "status": "published"
+            }
+        ]
+        
+        demo_articles = {}
+        for article_data in demo_articles_data:
+            article = Article(
+                author_id=target_user_id,
+                title=article_data["title"],
+                summary=article_data["summary"],
+                content=article_data["content"],
+                status=article_data["status"],
+                finished_at=datetime.now()
+            )
+            db.session.add(article)
+            db.session.flush()  # 获取ID
+            
+            # 添加标签关联
+            for tag_name in article_data["tags"]:
+                if tag_name in demo_tags:
+                    article_tag = ArticleTag(
+                        article_id=article.id,
+                        tag_id=demo_tags[tag_name].id
+                    )
+                    db.session.add(article_tag)
+            
+            demo_articles[article_data["title"]] = article
+            reset_stats["created_articles"] += 1
+        
+        current_app.logger.info(f"创建预制文章: {len(demo_articles)}篇")
+        
+        # 3. 创建文章引用关系（当前无引用关系）
+        demo_relationships = []
+        
+        for rel_data in demo_relationships:
+            citing_article = demo_articles.get(rel_data["citing"])
+            referenced_article = demo_articles.get(rel_data["referenced"])
+            
+            if citing_article and referenced_article:
+                relationship = ArticleRelationship(
+                    citing_article_id=citing_article.id,
+                    referenced_article_id=referenced_article.id
+                )
+                db.session.add(relationship)
+                reset_stats["created_relationships"] += 1
+        
+        current_app.logger.info(f"创建文章引用关系: {reset_stats['created_relationships']}个")
+        
+        # 提交事务
+        db.session.commit()
+        
+        current_app.logger.info(f"用户ID={target_user_id}的演示数据重置完成")
+        
+        return {
+            "message": "演示数据重置成功",
+            "reset_stats": reset_stats,
+            "demo_data": {
+                "user_id": target_user_id,
+                "username": user.username,
+                "tags_count": len(demo_tags),
+                "articles_count": len(demo_articles),
+                "relationships_count": reset_stats["created_relationships"]
+            }
+        }, 200
+        
+    except Exception as e:
+        # 回滚事务
+        db.session.rollback()
+        current_app.logger.error(f"重置演示数据失败: {str(e)}")
+        return {"message": f"重置演示数据失败: {str(e)}"}, 500
+
+
+@article_bp.route("/articles/reset-data/<int:user_id>", methods=["DELETE"])
+def reset_data(user_id:int):
+    """
+    重置用户ID=5的演示数据
+    ---
+    responses:
+        200:
+            description: 成功重置演示数据
+            schema:
+                type: object
+                properties:
+                    message:
+                        type: string
+                    reset_stats:
+                        type: object
+                        properties:
+                            deleted_articles:
+                                type: integer
+                            deleted_tags:
+                                type: integer
+                            deleted_tasks:
+                                type: integer
+                            deleted_records:
+                                type: integer
+                            created_articles:
+                                type: integer
+                            created_tags:
+                                type: integer
+                            created_relationships:
+                                type: integer
+        500:
+            description: 服务器内部错误
+    """
+
+    try:
+        # 开始事务
+        current_app.logger.info(f"开始重置用户ID={user_id}的演示数据")
+
+        # 检查用户是否存在
+        user = User.query.get(user_id)
+        if not user:
+            return {"message": f"用户ID={user_id}不存在"}, 404
+
+        # 统计信息
+        reset_stats = {
+            "deleted_articles": 0,
+            "deleted_tags": 0,
+            "deleted_tasks": 0,
+            "deleted_records": 0,
+            "created_articles": 0,
+            "created_tags": 0,
+            "created_relationships": 0
+        }
+
+        # === 第一阶段：删除现有数据（按外键依赖顺序） ===
+
+        # 1. 获取用户相关的所有ID
+        user_articles = Article.query.filter_by(author_id=user_id).all()
+        user_article_ids = [a.id for a in user_articles]
+
+        user_tags = Tag.query.filter_by(user_id=user_id).all()
+        user_tag_ids = [t.id for t in user_tags]
+
+        user_tasks = GenerationTask.query.filter_by(user_id=user_id).all()
+        user_task_ids = [t.id for t in user_tasks]
+
+        user_records = UserAudioRecord.query.filter_by(user_id=user_id).all()
+        user_record_ids = [r.id for r in user_records]
+
+        current_app.logger.info(
+            f"找到待删除数据: 文章{len(user_article_ids)}篇, 标签{len(user_tag_ids)}个, 任务{len(user_task_ids)}个, 记录{len(user_record_ids)}个")
+
+        # 2. 删除文章引用关系
+        if user_article_ids:
+            citing_count = ArticleRelationship.query.filter(
+                ArticleRelationship.citing_article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+
+            referenced_count = ArticleRelationship.query.filter(
+                ArticleRelationship.referenced_article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+
+            current_app.logger.info(f"删除文章引用关系: 作为引用方{citing_count}个, 作为被引用方{referenced_count}个")
+
+        # 3. 删除文章-标签关联
+        if user_article_ids:
+            ArticleTag.query.filter(
+                ArticleTag.article_id.in_(user_article_ids)
+            ).delete(synchronize_session=False)
+
+        if user_tag_ids:
+            ArticleTag.query.filter(
+                ArticleTag.tag_id.in_(user_tag_ids)
+            ).delete(synchronize_session=False)
+
+        # 4. 删除任务-记录映射
+        if user_task_ids:
+            TaskRecordsMapping.query.filter(
+                TaskRecordsMapping.task_id.in_(user_task_ids)
+            ).delete(synchronize_session=False)
+
+        if user_record_ids:
+            TaskRecordsMapping.query.filter(
+                TaskRecordsMapping.record_id.in_(user_record_ids)
+            ).delete(synchronize_session=False)
+
+        # 5. 删除实体数据
+        reset_stats["deleted_articles"] = Article.query.filter_by(author_id=user_id).delete()
+        reset_stats["deleted_tags"] = Tag.query.filter_by(user_id=user_id).delete()
+        reset_stats["deleted_tasks"] = GenerationTask.query.filter_by(user_id=user_id).delete()
+        reset_stats["deleted_records"] = UserAudioRecord.query.filter_by(user_id=user_id).delete()
+
+        db.session.commit()
+
+        current_app.logger.info(f"完成数据清理阶段")
+        return {
+            "message": "演示数据重置成功",
+            "reset_stats": reset_stats,
+            "demo_data": {
+                "user_id": user_id,
+                "username": user.username,
+                "tags_count": reset_stats["deleted_tags"],
+                "articles_count": reset_stats["deleted_articles"],
+                "relationships_count": reset_stats["created_relationships"]
+            }
+        }
+    except Exception as e:
+        # 回滚事务
+        db.session.rollback()
+        current_app.logger.error(f"重置演示数据失败: {str(e)}")
+        return {"message": f"重置演示数据失败: {str(e)}"}, 500
